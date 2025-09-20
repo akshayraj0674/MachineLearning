@@ -1,5 +1,0 @@
-pip freeze > requirements.txt
-jupytext ML.py --to notebook
-git add .
-git commit -m "learning"
-git push
