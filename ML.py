@@ -25,3 +25,6 @@ x_test = test
 
 model = LinearRegression()
 model.fit(x_train, y_train)
+
+
+predictions = model.predict(x_test)
