@@ -22,3 +22,6 @@ y_train = train['cost']
 
 x_test = test
 
+
+model = LinearRegression()
+model.fit(x_train, y_train)
