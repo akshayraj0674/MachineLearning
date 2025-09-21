@@ -15,3 +15,10 @@ sample_submission = pd.read_csv(sample_submission_url)
 print(train.head())
 print(test.head())
 print(sample_submission.head())
+
+
+x_train = train.drop('cost', axis=1)
+y_train = train['cost']
+
+x_test = test
+
