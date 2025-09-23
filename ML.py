@@ -28,3 +28,7 @@ model.fit(x_train, y_train)
 
 
 predictions = model.predict(x_test)
+
+submission = sample_submission.copy()
+submission['cost'] = predictions
+submission.to_csv('submission.csv', index=False)
