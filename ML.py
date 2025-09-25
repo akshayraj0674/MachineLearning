@@ -1,7 +1,7 @@
 import pandas as pd
 from sklearn.model_selection import train_test_split
-from sklearn.svm import SVC
-from sklearn.metrics import accuracy_score
+from sklearn.svm import SVR
+from sklearn.metrics import mean_squared_error
 
 
 train_url = 'https://raw.githubusercontent.com/akshayraj0674/MachineLearning/refs/heads/main/project-1-me-4127-e-2025-26/train.csv'
@@ -25,12 +25,13 @@ y_train = train['cost']
 x_train, x_val, y_train, y_val = train_test_split(x_train, y_train, test_size=0.2, random_state=42)
 
 
-model = SVC(kernel='rbf', C=1.0, gamma='scale', random_state=42)
+model = SVR(kernel='rbf', C=1.0, gamma='scale')
 model.fit(x_train, y_train)
 
 
-y_pred = model.predict(x_val)
-print("Validation Accuracy:", accuracy_score(y_val, y_pred))
+y_val_pred = model.predict(x_val)
+mse = mean_squared_error(y_val, y_val_pred)
+print("Validation Mean Squared Error:", mse)
 
 
 test_pred = model.predict(test)
