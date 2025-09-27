@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 from scipy.stats import boxcox
-from sklearn.linear_model import LinearRegression
+from sklearn.linear_model import LinearRegression, Lasso
 from sklearn.metrics import mean_squared_error
 from sklearn.model_selection import train_test_split
 
@@ -41,30 +41,38 @@ x_train, x_val, y_train_bc, y_val_bc = train_test_split(x, y_bc, test_size=0.2, 
 
 lr = LinearRegression()
 lr.fit(x_train, y_train_bc)
+y_val_pred_bc_lr = lr.predict(x_val)
 
 
-y_val_pred_bc = lr.predict(x_val)
+lasso = Lasso(alpha=.1, max_iter=1000)
+lasso.fit(x_train, y_train_bc)
+y_val_pred_bc_lasso = lasso.predict(x_val)
 
 
-def inv_boxcox(y, lmbda, shift):
+def inv_boxcox(y, lmbda, shift=0):
     if lmbda == 0:
         return np.exp(y) - shift
     else:
         return np.power(y * lmbda + 1, 1 / lmbda) - shift
 
 
-y_value_pred = inv_boxcox(y_val_pred_bc, bc_lambda, shift)
+y_value_pred_lr = inv_boxcox(y_val_pred_bc_lr, bc_lambda, shift)
+y_value_pred_lasso = inv_boxcox(y_val_pred_bc_lasso, bc_lambda, shift)
 y_value_true = inv_boxcox(y_val_bc, bc_lambda, shift)
 
 
-lr.fit(x, y_bc)
+rmse_lr = np.sqrt(mean_squared_error(y_value_true, y_value_pred_lr))
+rmse_lasso = np.sqrt(mean_squared_error(y_value_true, y_value_pred_lasso))
+print(f"Validation RMSE (Linear Regression): {rmse_lr:.4f}")
+print(f"Validation RMSE (Lasso): {rmse_lasso:.4f}")
 
 
+lasso.fit(x, y_bc)
 x_test = test[features].values
-y_test_pred_bc = lr.predict(x_test)
-y_test_pred = inv_boxcox(y_test_pred_bc, bc_lambda, shift)
+y_test_pred_bc_lasso = lasso.predict(x_test)
+y_test_pred_lasso = inv_boxcox(y_test_pred_bc_lasso, bc_lambda, shift)
 
 
 submission = sample_submission.copy()
-submission[target] = y_test_pred
+submission[target] = y_test_pred_lasso
 submission.to_csv('submission.csv', index=False)
