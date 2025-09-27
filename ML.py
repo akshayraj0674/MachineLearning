@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 from scipy.stats import boxcox
-from sklearn.linear_model import LinearRegression, Lasso
+from sklearn.linear_model import LinearRegression, ElasticNet
 from sklearn.metrics import mean_squared_error
 from sklearn.model_selection import train_test_split
 
@@ -44,9 +44,9 @@ lr.fit(x_train, y_train_bc)
 y_val_pred_bc_lr = lr.predict(x_val)
 
 
-lasso = Lasso(alpha=.1, max_iter=1000)
-lasso.fit(x_train, y_train_bc)
-y_val_pred_bc_lasso = lasso.predict(x_val)
+elasticnet = ElasticNet(alpha=.1, l1_ratio=0.5, max_iter=1000, random_state=42)
+elasticnet.fit(x_train, y_train_bc)
+y_val_pred_bc_en = elasticnet.predict(x_val)
 
 
 def inv_boxcox(y, lmbda, shift=0):
@@ -57,22 +57,22 @@ def inv_boxcox(y, lmbda, shift=0):
 
 
 y_value_pred_lr = inv_boxcox(y_val_pred_bc_lr, bc_lambda, shift)
-y_value_pred_lasso = inv_boxcox(y_val_pred_bc_lasso, bc_lambda, shift)
+y_value_pred_en = inv_boxcox(y_val_pred_bc_en, bc_lambda, shift)
 y_value_true = inv_boxcox(y_val_bc, bc_lambda, shift)
 
 
 rmse_lr = np.sqrt(mean_squared_error(y_value_true, y_value_pred_lr))
-rmse_lasso = np.sqrt(mean_squared_error(y_value_true, y_value_pred_lasso))
+rmse_en = np.sqrt(mean_squared_error(y_value_true, y_value_pred_en))
 print(f"Validation RMSE (Linear Regression): {rmse_lr:.4f}")
-print(f"Validation RMSE (Lasso): {rmse_lasso:.4f}")
+print(f"Validation RMSE (Lasso): {rmse_en:.4f}")
 
 
-lasso.fit(x, y_bc)
+elasticnet.fit(x, y_bc)
 x_test = test[features].values
-y_test_pred_bc_lasso = lasso.predict(x_test)
-y_test_pred_lasso = inv_boxcox(y_test_pred_bc_lasso, bc_lambda, shift)
+y_test_pred_bc_en = elasticnet.predict(x_test)
+y_test_pred_en = inv_boxcox(y_test_pred_bc_en, bc_lambda, shift)
 
 
 submission = sample_submission.copy()
-submission[target] = y_test_pred_lasso
+submission[target] = y_test_pred_en
 submission.to_csv('submission.csv', index=False)
