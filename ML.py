@@ -1,9 +1,7 @@
-import numpy as np
 import pandas as pd
-from scipy.stats import boxcox
-from sklearn.linear_model import LinearRegression, ElasticNet
-from sklearn.metrics import mean_squared_error
+from sklearn.linear_model import HuberRegressor
 from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
 
 
 train_url = 'https://raw.githubusercontent.com/akshayraj0674/MachineLearning/refs/heads/main/project-1-me-4127-e-2025-26/train.csv'
@@ -20,59 +18,38 @@ print(test.head())
 print(sample_submission.head())
 
 
-target = 'cost'
+target_col = 'cost'
+id_col = 'id'
 
-features = [col for col in train.columns if col not in [target, 'id']]
-
-x = train[features].values
-y = train[target].values
+features_cols = [col for col in train.columns if col not in [target_col, id_col]]
 
 
-if np.any(y <= 0):
-    shift = np.abs(np.min(y)) + 1
-    y_bc, bc_lambda = boxcox(y + shift)
-else:
-    shift = 0
-    y_bc, bc_lambda = boxcox(y)
+x = train[features_cols]
+y = train[target_col]
+x_test = test[features_cols]
 
 
-x_train, x_val, y_train_bc, y_val_bc = train_test_split(x, y_bc, test_size=0.2, random_state=42)
+x = x.fillna(x.median())
+x_test = x_test.fillna(x_test.median())
 
 
-lr = LinearRegression()
-lr.fit(x_train, y_train_bc)
-y_val_pred_bc_lr = lr.predict(x_val)
+scaler = StandardScaler()
+x = scaler.fit_transform(x)
+x_test = scaler.transform(x_test)
 
 
-elasticnet = ElasticNet(alpha=.1, l1_ratio=0.5, max_iter=1000, random_state=42)
-elasticnet.fit(x_train, y_train_bc)
-y_val_pred_bc_en = elasticnet.predict(x_val)
+x_train, x_val, y_train, y_val = train_test_split(x, y, test_size=0.2, random_state=42)
 
 
-def inv_boxcox(y, lmbda, shift=0):
-    if lmbda == 0:
-        return np.exp(y) - shift
-    else:
-        return np.power(y * lmbda + 1, 1 / lmbda) - shift
+model = HuberRegressor()
+model.fit(x_train, y_train)
 
 
-y_value_pred_lr = inv_boxcox(y_val_pred_bc_lr, bc_lambda, shift)
-y_value_pred_en = inv_boxcox(y_val_pred_bc_en, bc_lambda, shift)
-y_value_true = inv_boxcox(y_val_bc, bc_lambda, shift)
+val_pred = model.predict(x_val)
 
-
-rmse_lr = np.sqrt(mean_squared_error(y_value_true, y_value_pred_lr))
-rmse_en = np.sqrt(mean_squared_error(y_value_true, y_value_pred_en))
-print(f"Validation RMSE (Linear Regression): {rmse_lr:.4f}")
-print(f"Validation RMSE (Lasso): {rmse_en:.4f}")
-
-
-elasticnet.fit(x, y_bc)
-x_test = test[features].values
-y_test_pred_bc_en = elasticnet.predict(x_test)
-y_test_pred_en = inv_boxcox(y_test_pred_bc_en, bc_lambda, shift)
+test_pred = model.predict(x_test)
 
 
 submission = sample_submission.copy()
-submission[target] = y_test_pred_en
+submission[target_col] = test_pred
 submission.to_csv('submission.csv', index=False)
