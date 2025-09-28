@@ -2,7 +2,6 @@ import pandas as pd
 from sklearn.tree import DecisionTreeRegressor
 from sklearn.impute import SimpleImputer
 
-from ML import x_train
 
 train_url = 'https://raw.githubusercontent.com/akshayraj0674/MachineLearning/refs/heads/main/project-1-me-4127-e-2025-26/train.csv'
 test_url = 'https://raw.githubusercontent.com/akshayraj0674/MachineLearning/refs/heads/main/project-1-me-4127-e-2025-26/test.csv'
