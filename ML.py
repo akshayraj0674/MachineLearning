@@ -28,9 +28,9 @@ x_test_imputed = imputer.transform(x_test)
 
 
 model = DecisionTreeRegressor(
-    max_depth=30,
-    min_samples_leaf=10,
-    min_samples_split=50,
+    max_depth=15,
+    min_samples_leaf=200,
+    min_samples_split=500,
     random_state=0
 )
 model.fit(x_train_imputed, y_train)
