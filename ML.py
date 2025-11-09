@@ -8,8 +8,13 @@ from typing import List
 
 from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import log_loss
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import OrdinalEncoder
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.calibration import CalibratedClassifierCV
 
-from catboost import CatBoostClassifier
+from lightgbm import LGBMClassifier
 
 
 train_url   = "https://raw.githubusercontent.com/akshayraj0674/MachineLearning/refs/heads/main/ml-4127-e-project-2/train_data.csv"
@@ -21,6 +26,10 @@ TARGET_COL = "Action"
 N_FOLDS = 5
 RANDOM_STATE = 42
 VERBOSE = 1
+
+
+CALIBRATE = False
+CALIBRATION_METHOD = "isotonic"
 
 
 def read_csv_url(url: str) -> pd.DataFrame:
@@ -44,11 +53,53 @@ def read_csv_url(url: str) -> pd.DataFrame:
         return pd.read_csv(BytesIO(r.content))
 
 
-def get_feature_sets(df: pd.DataFrame, target_col: str, id_col: str):
-    feature_cols = [c for c in df.columns if c not in [target_col, id_col]]
+def split_features(df: pd.DataFrame, target: str, id_col: str):
+    feature_cols = [c for c in df.columns if c not in [target, id_col]]
     cat_cols = [c for c in feature_cols if df[c].dtype == "object" or str(df[c].dtype).startswith("category")]
     num_cols = [c for c in feature_cols if c not in cat_cols]
     return feature_cols, num_cols, cat_cols
+
+
+def build_lightgbm_pipeline(num_cols: List[str], cat_cols: List[str]) -> Pipeline:
+    """
+    Preprocessing:
+      - Numeric: median imputation
+      - Categorical: most-frequent imputation + ordinal encoding (unknown -> -1)
+    """
+    numeric_tf = Pipeline([
+        ("imputer", SimpleImputer(strategy="median"))
+    ])
+    categorical_tf = Pipeline([
+        ("imputer", SimpleImputer(strategy="most_frequent")),
+        ("encoder", OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1))
+    ])
+
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ("num", numeric_tf, num_cols),
+            ("cat", categorical_tf, cat_cols)
+        ],
+        remainder="drop"
+    )
+
+    model = LGBMClassifier(
+        objective="multiclass",
+        num_class=3,
+        n_estimators=1000,
+        learning_rate=0.03,
+        max_depth=-1,
+        subsample=0.9,
+        colsample_bytree=0.9,
+        reg_alpha=0.1,
+        reg_lambda=0.3,
+        random_state=RANDOM_STATE,
+        n_jobs=-1
+    )
+
+    return Pipeline([
+        ("prep", preprocessor),
+        ("model", model)
+    ])
 
 
 def main():
@@ -70,7 +121,7 @@ def main():
         print(f"[Warning] sample_submission first 4 columns expected {expected_headers}, got {list(sample.columns)[:4]}")
 
     id_col = "id"
-    feature_cols, num_cols, cat_cols = get_feature_sets(train, TARGET_COL, id_col)
+    feature_cols, num_cols, cat_cols = split_features(train, TARGET_COL, id_col)
     print(f"Detected {len(feature_cols)} features (numeric={len(num_cols)}, categorical={len(cat_cols)})")
 
     X = train[feature_cols].copy()
@@ -83,60 +134,36 @@ def main():
     if missing:
         raise ValueError(f"Training data is missing classes: {missing}. Add data or relabel before training.")
 
-    # CatBoost categorical feature indices
-    cat_indices = [X.columns.get_loc(c) for c in cat_cols]
-
     skf = StratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=RANDOM_STATE)
     class_order = [0, 1, 2]
+
     oof_probs = np.zeros((len(train), len(class_order)), dtype=float)
-    test_fold_probs: List[np.ndarray] = []
+    test_fold_probs = []
 
     for fold, (tr_idx, val_idx) in enumerate(skf.split(X, y), start=1):
         if VERBOSE:
             print(f"\n--- Fold {fold}/{N_FOLDS} ---")
-
         X_tr, X_val = X.iloc[tr_idx], X.iloc[val_idx]
         y_tr, y_val = y.iloc[tr_idx], y.iloc[val_idx]
 
-        model = CatBoostClassifier(
-            loss_function="MultiClass",
-            eval_metric="MultiClass",
-            iterations=2000,
-            learning_rate=0.03,
-            depth=8,
-            l2_leaf_reg=5.0,
-            random_seed=RANDOM_STATE + fold,  # slightly varied per fold
-            early_stopping_rounds=100,
-            bootstrap_type="Bayesian",
-            bagging_temperature=1.0,
-            border_count=254,
-            grow_policy="SymmetricTree",
-            allow_writing_files=False,
-            verbose=False
-        )
+        pipeline = build_lightgbm_pipeline(num_cols, cat_cols)
+        pipeline.fit(X_tr, y_tr)
 
-        model.fit(
-            X_tr, y_tr,
-            cat_features=cat_indices if cat_indices else None,
-            eval_set=(X_val, y_val),
-            use_best_model=True,
-            verbose=False
-        )
+        model = pipeline
+        if CALIBRATE:
+            calibrator = CalibratedClassifierCV(pipeline, method=CALIBRATION_METHOD, cv=3)
+            calibrator.fit(X_tr, y_tr)
+            model = calibrator
 
-        val_pred_full = model.predict_proba(X_val)  # shape (n_val, n_classes)
+        # Predict probabilities
+        val_pred_full = model.predict_proba(X_val)
         test_pred_full = model.predict_proba(X_test)
 
-        # Align probabilities to class_order [0,1,2]
-        # CatBoost uses sorted unique labels; y is ints 0,1,2, so order should match.
-        # Still, we compute mapping defensively if available.
-        try:
-            model_classes = list(model.classes_)  # scikit-learn compat
-            idx_map = [model_classes.index(c) for c in class_order]
-            val_pred = val_pred_full[:, idx_map]
-            test_pred = test_pred_full[:, idx_map]
-        except Exception:
-            val_pred = val_pred_full
-            test_pred = test_pred_full
+        # Align probabilities to fixed class order [0,1,2]
+        model_classes = list(model.classes_)
+        idx_map = [model_classes.index(c) for c in class_order]
+        val_pred = val_pred_full[:, idx_map]
+        test_pred = test_pred_full[:, idx_map]
 
         oof_probs[val_idx] = val_pred
         test_fold_probs.append(test_pred)
@@ -169,10 +196,12 @@ def main():
     print(f"Saved submission to {out_path.resolve()}")
 
     diagnostics = {
-        "model_name": "CatBoostClassifier (Ordered Gradient Boosting with Oblivious Trees)",
+        "model_name": "LightGBM LGBMClassifier (Gradient Boosted Decision Trees)",
         "oof_log_loss": float(overall_logloss),
         "folds": N_FOLDS,
         "random_state": RANDOM_STATE,
+        "calibrated": CALIBRATE,
+        "calibration_method": CALIBRATION_METHOD if CALIBRATE else None,
         "n_features": len(feature_cols),
         "n_numeric": len(num_cols),
         "n_categorical": len(cat_cols),
