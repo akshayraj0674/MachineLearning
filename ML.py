@@ -8,13 +8,8 @@ from typing import List
 
 from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import log_loss
-from sklearn.impute import SimpleImputer
-from sklearn.preprocessing import OrdinalEncoder
-from sklearn.compose import ColumnTransformer
-from sklearn.pipeline import Pipeline
-from sklearn.calibration import CalibratedClassifierCV
 
-from lightgbm import LGBMClassifier
+from catboost import CatBoostClassifier
 
 
 train_url   = "https://raw.githubusercontent.com/akshayraj0674/MachineLearning/refs/heads/main/ml-4127-e-project-2/train_data.csv"
@@ -23,13 +18,11 @@ sample_url  = "https://raw.githubusercontent.com/akshayraj0674/MachineLearning/r
 
 
 TARGET_COL = "Action"
+ID_COL = "id"
 N_FOLDS = 5
+SEEDS: List[int] = [42, 1337, 2025]   # multi-seed ensemble per fold (increase for even stronger model)
 RANDOM_STATE = 42
 VERBOSE = 1
-
-
-CALIBRATE = False
-CALIBRATION_METHOD = "isotonic"
 
 
 def read_csv_url(url: str) -> pd.DataFrame:
@@ -53,53 +46,44 @@ def read_csv_url(url: str) -> pd.DataFrame:
         return pd.read_csv(BytesIO(r.content))
 
 
-def split_features(df: pd.DataFrame, target: str, id_col: str):
-    feature_cols = [c for c in df.columns if c not in [target, id_col]]
+def get_feature_sets(df: pd.DataFrame, target_col: str, id_col: str):
+    feature_cols = [c for c in df.columns if c not in [target_col, id_col]]
     cat_cols = [c for c in feature_cols if df[c].dtype == "object" or str(df[c].dtype).startswith("category")]
     num_cols = [c for c in feature_cols if c not in cat_cols]
     return feature_cols, num_cols, cat_cols
 
 
-def build_lightgbm_pipeline(num_cols: List[str], cat_cols: List[str]) -> Pipeline:
+def build_catboost(seed: int, iterations: int = 6000) -> CatBoostClassifier:
     """
-    Preprocessing:
-      - Numeric: median imputation
-      - Categorical: most-frequent imputation + ordinal encoding (unknown -> -1)
+    Strong CatBoost config:
+    - Many iterations with early stopping
+    - Balanced class weights for imbalance
+    - Deeper trees, stronger regularization
+    - Bayesian bootstrap + feature subsampling
+    - Optional GPU if CATBOOST_TASK_TYPE=GPU
     """
-    numeric_tf = Pipeline([
-        ("imputer", SimpleImputer(strategy="median"))
-    ])
-    categorical_tf = Pipeline([
-        ("imputer", SimpleImputer(strategy="most_frequent")),
-        ("encoder", OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1))
-    ])
-
-    preprocessor = ColumnTransformer(
-        transformers=[
-            ("num", numeric_tf, num_cols),
-            ("cat", categorical_tf, cat_cols)
-        ],
-        remainder="drop"
-    )
-
-    model = LGBMClassifier(
-        objective="multiclass",
-        num_class=3,
-        n_estimators=1000,
+    task_type = os.getenv("CATBOOST_TASK_TYPE", "CPU").upper()
+    params = dict(
+        loss_function="MultiClass",
+        eval_metric="MultiClass",
+        iterations=iterations,
         learning_rate=0.03,
-        max_depth=-1,
-        subsample=0.9,
-        colsample_bytree=0.9,
-        reg_alpha=0.1,
-        reg_lambda=0.3,
-        random_state=RANDOM_STATE,
-        n_jobs=-1
+        depth=8,                   # try 8–10 for complex data; 8 is safer
+        l2_leaf_reg=12.0,          # stronger regularization
+        random_seed=seed,
+        early_stopping_rounds=200,
+        bootstrap_type="Bayesian",
+        bagging_temperature=1.5,   # >1 encourages more stochasticity
+        rsm=0.9,                   # feature subsampling per split (Random Subspace Method)
+        random_strength=1.5,       # randomness in score to fight overfit
+        border_count=254,
+        grow_policy="SymmetricTree",
+        auto_class_weights="Balanced",
+        allow_writing_files=False,
+        task_type=task_type,       # "CPU" or "GPU"
+        verbose=False
     )
-
-    return Pipeline([
-        ("prep", preprocessor),
-        ("model", model)
-    ])
+    return CatBoostClassifier(**params)
 
 
 def main():
@@ -108,10 +92,10 @@ def main():
     test = read_csv_url(test_url)
     sample = read_csv_url(sample_url)
 
-    # Validate required columns
+    # Basic validation
     for name, df in [("train", train), ("test", test)]:
-        if "id" not in df.columns:
-            raise ValueError(f"'{name}.csv' must contain an 'id' column.")
+        if ID_COL not in df.columns:
+            raise ValueError(f"'{name}.csv' must contain an '{ID_COL}' column.")
     if TARGET_COL not in train.columns:
         raise ValueError(f"Target column '{TARGET_COL}' not found in train. Columns: {list(train.columns)}")
 
@@ -120,9 +104,13 @@ def main():
     if list(sample.columns)[:4] != expected_headers:
         print(f"[Warning] sample_submission first 4 columns expected {expected_headers}, got {list(sample.columns)[:4]}")
 
-    id_col = "id"
-    feature_cols, num_cols, cat_cols = split_features(train, TARGET_COL, id_col)
+    feature_cols, num_cols, cat_cols = get_feature_sets(train, TARGET_COL, ID_COL)
     print(f"Detected {len(feature_cols)} features (numeric={len(num_cols)}, categorical={len(cat_cols)})")
+
+    # Ensure test has same feature columns
+    missing_in_test = [c for c in feature_cols if c not in test.columns]
+    if missing_in_test:
+        raise ValueError(f"These feature columns are missing in test.csv: {missing_in_test}")
 
     X = train[feature_cols].copy()
     y = train[TARGET_COL].astype(int).copy()
@@ -134,53 +122,62 @@ def main():
     if missing:
         raise ValueError(f"Training data is missing classes: {missing}. Add data or relabel before training.")
 
+    # CatBoost categorical feature indices (by DataFrame position)
+    cat_indices = [X.columns.get_loc(c) for c in cat_cols]
+
     skf = StratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=RANDOM_STATE)
     class_order = [0, 1, 2]
 
     oof_probs = np.zeros((len(train), len(class_order)), dtype=float)
-    test_fold_probs = []
+    test_fold_probs: List[np.ndarray] = []
 
     for fold, (tr_idx, val_idx) in enumerate(skf.split(X, y), start=1):
         if VERBOSE:
             print(f"\n--- Fold {fold}/{N_FOLDS} ---")
+
         X_tr, X_val = X.iloc[tr_idx], X.iloc[val_idx]
         y_tr, y_val = y.iloc[tr_idx], y.iloc[val_idx]
 
-        pipeline = build_lightgbm_pipeline(num_cols, cat_cols)
-        pipeline.fit(X_tr, y_tr)
+        # Seed ensemble per fold
+        val_agg = []
+        test_agg = []
 
-        model = pipeline
-        if CALIBRATE:
-            calibrator = CalibratedClassifierCV(pipeline, method=CALIBRATION_METHOD, cv=3)
-            calibrator.fit(X_tr, y_tr)
-            model = calibrator
+        for s in SEEDS:
+            model = build_catboost(seed=s, iterations=6000)
+            model.fit(
+                X_tr, y_tr,
+                cat_features=cat_indices if cat_indices else None,
+                eval_set=(X_val, y_val),
+                use_best_model=True,
+                verbose=False
+            )
+            val_pred = model.predict_proba(X_val)
+            test_pred = model.predict_proba(X_test)
 
-        # Predict probabilities
-        val_pred_full = model.predict_proba(X_val)
-        test_pred_full = model.predict_proba(X_test)
+            # CatBoost outputs probabilities in label order (0,1,2) when y is ints
+            val_agg.append(val_pred)
+            test_agg.append(test_pred)
 
-        # Align probabilities to fixed class order [0,1,2]
-        model_classes = list(model.classes_)
-        idx_map = [model_classes.index(c) for c in class_order]
-        val_pred = val_pred_full[:, idx_map]
-        test_pred = test_pred_full[:, idx_map]
+        # Average across seeds
+        val_mean = np.mean(val_agg, axis=0)
+        test_mean = np.mean(test_agg, axis=0)
 
-        oof_probs[val_idx] = val_pred
-        test_fold_probs.append(test_pred)
+        oof_probs[val_idx] = val_mean
+        test_fold_probs.append(test_mean)
 
-        fold_logloss = log_loss(y_val, val_pred)
+        fold_logloss = log_loss(y_val, val_mean)
         if VERBOSE:
-            print(f"Fold {fold} log_loss: {fold_logloss:.6f}")
+            print(f"Fold {fold} log_loss (seed-ensemble): {fold_logloss:.6f}")
 
     overall_logloss = log_loss(y, oof_probs)
-    print(f"\nOOF log_loss: {overall_logloss:.6f}")
+    print(f"\nOOF log_loss (seed-ensemble): {overall_logloss:.6f}")
 
     # Average test probabilities over folds
     test_probs = np.mean(test_fold_probs, axis=0)
 
     # Build submission with exact headers: id,0,1,2
     submission = pd.DataFrame({
-        "id": test[id_col].values,
+        "id": test[ID_COL].values,
         "0": test_probs[:, class_order.index(0)],
         "1": test_probs[:, class_order.index(1)],
         "2": test_probs[:, class_order.index(2)]
@@ -196,12 +193,11 @@ def main():
     print(f"Saved submission to {out_path.resolve()}")
 
     diagnostics = {
-        "model_name": "LightGBM LGBMClassifier (Gradient Boosted Decision Trees)",
+        "model_name": "CatBoostClassifier (5-fold × multi-seed ensemble, Balanced class weights)",
+        "task_type": os.getenv("CATBOOST_TASK_TYPE", "CPU").upper(),
         "oof_log_loss": float(overall_logloss),
         "folds": N_FOLDS,
-        "random_state": RANDOM_STATE,
-        "calibrated": CALIBRATE,
-        "calibration_method": CALIBRATION_METHOD if CALIBRATE else None,
+        "seeds": SEEDS,
         "n_features": len(feature_cols),
         "n_numeric": len(num_cols),
         "n_categorical": len(cat_cols),
