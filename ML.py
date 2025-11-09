@@ -21,7 +21,7 @@ test_url    = "https://raw.githubusercontent.com/akshayraj0674/MachineLearning/r
 sample_url  = "https://raw.githubusercontent.com/akshayraj0674/MachineLearning/refs/heads/main/ml-4127-e-project-2/sample_submission_probs.csv"
 
 
-TARGET_COL = "action"
+TARGET_COL = "Action"
 N_FOLDS = 5
 RANDOM_STATE = 42
 
