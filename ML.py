@@ -16,8 +16,8 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.calibration import CalibratedClassifierCV
 
 
-train_url   = "https://github.com/akshayraj0674/MachineLearning/blob/main/ml-4127-e-project-2/train_data.xlsx"
-test_url    = "https://github.com/akshayraj0674/MachineLearning/blob/main/ml-4127-e-project-2/test_data.xlsx"
+train_url   = "https://github.com/akshayraj0674/MachineLearning/blob/main/ml-4127-e-project-2/train_data.csv"
+test_url    = "https://github.com/akshayraj0674/MachineLearning/blob/main/ml-4127-e-project-2/test_data.csv"
 sample_url  = "https://github.com/akshayraj0674/MachineLearning/blob/main/ml-4127-e-project-2/sample_submission_probs.csv"
 
 
